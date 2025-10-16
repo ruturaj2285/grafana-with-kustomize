@@ -1,0 +1,90 @@
+name: Deploy Grafana (Kustomize)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'grafana-kustomize/**'  # Only trigger when Grafana configs change
+
+permissions:
+  id-token: write       # Required for OIDC assume role
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  EKS_CLUSTER_NAME: vb-observability-cluster
+  ENVIRONMENT: dev        # Change this to stg or prod as needed
+  KUSTOMIZE_PATH: grafana-kustomize/overlays/${{ env.ENVIRONMENT }}
+
+jobs:
+  deploy:
+    name: Deploy Grafana to EKS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------
+      # Option 1: Assume Role via OIDC (recommended)
+      # ------------------------------
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-eks-deployer-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ------------------------------
+      # Option 2 (optional): Use stored Kubeconfig secret
+      # Uncomment if you prefer KUBECONFIG_CONTENT
+      # ------------------------------
+      # - name: Setup kubeconfig from secret
+      #   run: |
+      #     mkdir -p ~/.kube
+      #     echo "${{ secrets.KUBECONFIG_CONTENT }}" > ~/.kube/config
+      #     chmod 600 ~/.kube/config
+
+      - name: Install kubectl & kustomize
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y kubectl
+          curl -Lo kustomize.tar.gz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.5.0/kustomize_v5.5.0_linux_amd64.tar.gz
+          tar -xzf kustomize.tar.gz
+          sudo mv kustomize /usr/local/bin/kustomize
+          kubectl version --client
+          kustomize version
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER_NAME }}
+
+      - name: Validate Kustomize build
+        run: |
+          echo "🔍 Validating Kustomize overlay for ${{ env.ENVIRONMENT }}..."
+          kustomize build ${{ env.KUSTOMIZE_PATH }} | kubectl apply --dry-run=client -f -
+
+      - name: Deploy Grafana manifests
+        run: |
+          echo "🚀 Deploying Grafana to EKS..."
+          kubectl apply -k ${{ env.KUSTOMIZE_PATH }}
+          kubectl rollout status deployment/${{ env.ENVIRONMENT }}-grafana -n grafana-${{ env.ENVIRONMENT }}
+
+      - name: Post-deployment health check
+        run: |
+          echo "🩺 Checking Grafana pod and service..."
+          kubectl get pods -n grafana-${{ env.ENVIRONMENT }}
+          kubectl get svc -n grafana-${{ env.ENVIRONMENT }}
+
+      - name: Print Grafana URL
+        run: |
+          SERVICE_TYPE=$(kubectl get svc ${{ env.ENVIRONMENT }}-grafana -n grafana-${{ env.ENVIRONMENT }} -o jsonpath='{.spec.type}')
+          if [ "$SERVICE_TYPE" = "LoadBalancer" ]; then
+            EXTERNAL_URL=$(kubectl get svc ${{ env.ENVIRONMENT }}-grafana -n grafana-${{ env.ENVIRONMENT }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            echo "🌐 Grafana URL: http://$EXTERNAL_URL"
+          else
+            echo "ℹ️ Grafana uses ClusterIP or NodePort. Use port-forwarding to access it:"
+            echo "kubectl port-forward svc/${{ env.ENVIRONMENT }}-grafana 3000:80 -n grafana-${{ env.ENVIRONMENT }}"
+          fi
