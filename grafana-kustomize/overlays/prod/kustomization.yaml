@@ -1,0 +1,13 @@
+resources:
+  - ../../base
+
+patches:
+  - path: patch-deployment.yaml
+  - path: patch-service.yaml
+  - path: patch-pvc.yaml
+
+namePrefix: stg-
+namespace: grafana-stg
+
+commonLabels:
+  environment: stg

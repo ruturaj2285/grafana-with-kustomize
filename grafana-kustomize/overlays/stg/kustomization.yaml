@@ -1,0 +1,13 @@
+resources:
+  - ../../base
+
+patches:
+  - path: patch-deployment.yaml
+  - path: patch-service.yaml
+  - path: patch-pvc.yaml
+
+namePrefix: prod-
+namespace: grafana-prod
+
+commonLabels:
+  environment: prod
